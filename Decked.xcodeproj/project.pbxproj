@@ -29,9 +29,22 @@
 		E8B657522F298BD70096F0B6 /* DeckedUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DeckedUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		E8B6579F2F299D4A0096F0B6 /* Exceptions for "Decked" folder in "Decked" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E8B6573A2F298BD50096F0B6 /* Decked */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		E8B6573D2F298BD50096F0B6 /* Decked */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E8B6579F2F299D4A0096F0B6 /* Exceptions for "Decked" folder in "Decked" target */,
+			);
 			path = Decked;
 			sourceTree = "<group>";
 		};
@@ -397,7 +410,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 8MBP94XP38;
+				DEVELOPMENT_TEAM = 9BY9RQP8PP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -429,7 +442,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 8MBP94XP38;
+				DEVELOPMENT_TEAM = 9BY9RQP8PP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
