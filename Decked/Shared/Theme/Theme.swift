@@ -102,6 +102,15 @@ struct DeckGradients {
         endPoint: .bottomTrailing
     )
     
+    static let successGradient = LinearGradient(
+        colors: [
+            Color.deckSuccess,
+            Color.deckSuccess.opacity(0.8)
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    
     static func rarityGlow(_ rarity: CardRarity) -> RadialGradient {
         RadialGradient(
             colors: [rarity.color.opacity(0.4), rarity.color.opacity(0.0)],

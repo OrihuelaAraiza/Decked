@@ -264,22 +264,58 @@ struct ResultCardRow: View {
     ResultsListView(
         matches: [
             CardMatch(
-                id: "sv3-215",
-                card: MockCardData.allCards.first { $0.id == "sv3-215" }!,
+                id: "base1-4",
+                card: Card(
+                    id: "base1-4",
+                    name: "Charizard",
+                    setId: "base1",
+                    setName: "Base Set",
+                    number: "4",
+                    rarity: .holo,
+                    imageURL: URL(string: "https://images.pokemontcg.io/base1/4.png"),
+                    imageURLHighRes: URL(string: "https://images.pokemontcg.io/base1/4_hires.png"),
+                    artist: nil,
+                    supertype: nil,
+                    subtypes: nil,
+                    hp: nil,
+                    types: nil,
+                    nationalPokedexNumber: nil,
+                    marketPrice: 150.0,
+                    lowPrice: nil,
+                    highPrice: nil,
+                    setSeries: nil,
+                    setReleaseDate: nil,
+                    setTotalCards: nil
+                ),
                 confidence: 0.92,
                 matchedFields: ["name", "number"]
             ),
             CardMatch(
-                id: "sv2-223",
-                card: MockCardData.allCards.first { $0.id == "sv2-223" }!,
+                id: "base1-58",
+                card: Card(
+                    id: "base1-58",
+                    name: "Pikachu",
+                    setId: "base1",
+                    setName: "Base Set",
+                    number: "58",
+                    rarity: .common,
+                    imageURL: URL(string: "https://images.pokemontcg.io/base1/58.png"),
+                    imageURLHighRes: URL(string: "https://images.pokemontcg.io/base1/58_hires.png"),
+                    artist: nil,
+                    supertype: nil,
+                    subtypes: nil,
+                    hp: nil,
+                    types: nil,
+                    nationalPokedexNumber: nil,
+                    marketPrice: 25.0,
+                    lowPrice: nil,
+                    highPrice: nil,
+                    setSeries: nil,
+                    setReleaseDate: nil,
+                    setTotalCards: nil
+                ),
                 confidence: 0.78,
                 matchedFields: ["name"]
-            ),
-            CardMatch(
-                id: "sv1-058",
-                card: MockCardData.allCards.first { $0.id == "sv1-058" }!,
-                confidence: 0.45,
-                matchedFields: ["number"]
             )
         ],
         onSelect: { _ in }

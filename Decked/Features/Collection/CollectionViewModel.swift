@@ -2,11 +2,12 @@
 //  CollectionViewModel.swift
 //  Decked
 //
-//  ViewModel for collection management
+//  ViewModel for collection management with Core Data
 //
 
 import Foundation
 import Combine
+import CoreData
 
 // MARK: - Collection Filter
 
@@ -41,31 +42,33 @@ enum CollectionSortOption {
 
 // MARK: - Collection ViewModel
 
+@MainActor
 final class CollectionViewModel: ObservableObject {
     
     // MARK: - Published Properties
     
-    @Published private(set) var cards: [CollectionCard] = []
+    @Published private(set) var ownedCards: [OwnedCardEntity] = []
     @Published private(set) var isLoading = false
     @Published var searchText = ""
     @Published var filter: CollectionFilter = .all
     @Published var sortOption: CollectionSortOption = .dateAdded
     
-    // MARK: - Services
+    // MARK: - Properties
     
-    private let collectionService: CollectionServiceProtocol
+    private let viewContext: NSManagedObjectContext
     
     // MARK: - Computed Properties
     
-    var filteredCards: [CollectionCard] {
-        var result = cards
+    var filteredCards: [OwnedCardEntity] {
+        var result = ownedCards
         
         // Apply search filter
         if !searchText.isEmpty {
             result = result.filter { card in
-                card.card.name.localizedCaseInsensitiveContains(searchText) ||
-                card.card.setName.localizedCaseInsensitiveContains(searchText) ||
-                card.card.number.contains(searchText)
+                guard let catalogCard = card.catalogCard else { return false }
+                return catalogCard.name.localizedCaseInsensitiveContains(searchText) ||
+                       catalogCard.setName.localizedCaseInsensitiveContains(searchText) ||
+                       catalogCard.number.contains(searchText)
             }
         }
         
@@ -73,44 +76,47 @@ final class CollectionViewModel: ObservableObject {
         switch filter {
         case .all:
             break
-        case .pokemon:
-            result = result.filter { $0.card.supertype == "Pokémon" }
-        case .trainer:
-            result = result.filter { $0.card.supertype == "Trainer" }
-        case .energy:
-            result = result.filter { $0.card.supertype == "Energy" }
         case .rare:
             let rareRarities: [CardRarity] = [.rare, .holo, .ultraRare, .secretRare, .specialArt, .illustrationRare]
-            result = result.filter { rareRarities.contains($0.card.rarity) }
+            result = result.filter { card in
+                guard let rarity = card.catalogCard?.rarity else { return false }
+                return rareRarities.contains(CardRarity.from(rarity))
+            }
         case .foil:
             result = result.filter { $0.isFoil }
+        default:
+            // Pokemon, Trainer, Energy filters not applicable without supertype data
+            break
         }
         
         // Apply sort
         switch sortOption {
         case .dateAdded:
-            result.sort { $0.dateAdded > $1.dateAdded }
+            result.sort { $0.createdAt > $1.createdAt }
         case .name:
-            result.sort { $0.card.name < $1.card.name }
+            result.sort { ($0.catalogCard?.name ?? "") < ($1.catalogCard?.name ?? "") }
         case .value:
-            result.sort { ($0.estimatedValue ?? 0) > ($1.estimatedValue ?? 0) }
+            result.sort { $0.totalValue > $1.totalValue }
         case .rarity:
-            result.sort { rarityOrder($0.card.rarity) > rarityOrder($1.card.rarity) }
+            result.sort { 
+                rarityOrder(CardRarity.from($0.catalogCard?.rarity ?? "")) > 
+                rarityOrder(CardRarity.from($1.catalogCard?.rarity ?? ""))
+            }
         }
         
         return result
     }
     
     var totalCards: Int {
-        cards.reduce(0) { $0 + $1.quantity }
+        ownedCards.reduce(0) { $0 + Int($1.quantity) }
     }
     
     var uniqueCards: Int {
-        cards.count
+        ownedCards.count
     }
     
     var totalValue: Double {
-        cards.compactMap { $0.estimatedValue }.reduce(0, +)
+        ownedCards.reduce(0) { $0 + $1.totalValue }
     }
     
     var formattedTotalValue: String {
@@ -122,26 +128,40 @@ final class CollectionViewModel: ObservableObject {
     
     // MARK: - Initialization
     
-    init(collectionService: CollectionServiceProtocol = CollectionService.shared) {
-        self.collectionService = collectionService
+    init(viewContext: NSManagedObjectContext) {
+        self.viewContext = viewContext
     }
     
     // MARK: - Public Methods
     
-    @MainActor
     func loadCollection() async {
         isLoading = true
-        cards = await collectionService.getCards()
+        
+        let request = OwnedCardEntity.fetchRequest()
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \OwnedCardEntity.createdAt, ascending: false)
+        ]
+        request.relationshipKeyPathsForPrefetching = ["catalogCard", "binder"]
+        
+        do {
+            ownedCards = try viewContext.fetch(request)
+            print("✅ Loaded \(ownedCards.count) cards from collection")
+        } catch {
+            print("❌ Failed to load collection: \(error)")
+        }
+        
         isLoading = false
     }
     
-    @MainActor
-    func deleteCard(_ cardId: UUID) async {
+    func deleteCard(_ card: OwnedCardEntity) async {
+        viewContext.delete(card)
+        
         do {
-            try await collectionService.removeCard(cardId)
+            try viewContext.save()
             await loadCollection()
+            print("✅ Deleted card from collection")
         } catch {
-            print("Failed to delete card: \(error)")
+            print("❌ Failed to delete card: \(error)")
         }
     }
     

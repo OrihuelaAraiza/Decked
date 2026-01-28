@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import SwiftUI
 
 // MARK: - Card Model
 /// Represents a Pokémon TCG card from the API/database
@@ -34,6 +35,19 @@ struct Card: Identifiable, Codable, Hashable {
     let setSeries: String?
     let setReleaseDate: String?
     let setTotalCards: Int?
+    
+    // Computed property for backward compatibility
+    var imageLargeURL: URL? {
+        imageURLHighRes
+    }
+    
+    // CodingKeys to exclude computed property from Codable
+    enum CodingKeys: String, CodingKey {
+        case id, name, setId, setName, number, rarity, imageURL, imageURLHighRes
+        case artist, supertype, subtypes, hp, types, nationalPokedexNumber
+        case marketPrice, lowPrice, highPrice
+        case setSeries, setReleaseDate, setTotalCards
+    }
 }
 
 // MARK: - Card Rarity
@@ -132,6 +146,10 @@ enum CardLanguage: String, Codable, CaseIterable, Hashable {
     case portuguese = "PT"
     case chinese = "CN"
     
+    var code: String {
+        return rawValue
+    }
+    
     var displayName: String {
         switch self {
         case .english: return "English"
@@ -179,8 +197,22 @@ enum CardCondition: String, Codable, CaseIterable, Hashable {
         }
     }
     
+    var shortCode: String {
+        rawValue
+    }
+    
     var shortName: String {
         rawValue
+    }
+    
+    var color: Color {
+        switch self {
+        case .nearMint: return .deckSuccess
+        case .lightlyPlayed: return .deckAccent
+        case .moderatelyPlayed: return .deckWarning
+        case .heavilyPlayed: return .deckError
+        case .damaged: return .deckTextMuted
+        }
     }
     
     var conditionMultiplier: Double {

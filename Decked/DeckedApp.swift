@@ -10,6 +10,8 @@ import SwiftUI
 @main
 struct DeckedApp: App {
     
+    let persistenceController = PersistenceController.shared
+    
     init() {
         configureAppAppearance()
     }
@@ -17,6 +19,7 @@ struct DeckedApp: App {
     var body: some Scene {
         WindowGroup {
             MainTabView()
+                .environment(\.managedObjectContext, persistenceController.viewContext)
                 .preferredColorScheme(.dark)
         }
     }

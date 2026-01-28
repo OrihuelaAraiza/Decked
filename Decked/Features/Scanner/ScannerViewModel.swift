@@ -28,7 +28,7 @@ final class ScannerViewModel: ObservableObject {
     let cameraService: CameraService
     private let ocrService: OCRService
     private let cardParser: CardTextParser
-    private let apiClient: CardAPIClient
+    private let apiClient: PokemonTCGAPIClientProtocol
     
     // MARK: - Private Properties
     
@@ -52,12 +52,12 @@ final class ScannerViewModel: ObservableObject {
         cameraService: CameraService? = nil,
         ocrService: OCRService = OCRService(),
         cardParser: CardTextParser = CardTextParser(),
-        apiClient: CardAPIClient = CardAPIClient()
+        apiClient: PokemonTCGAPIClientProtocol? = nil
     ) {
         self.cameraService = cameraService ?? CameraService()
         self.ocrService = ocrService
         self.cardParser = cardParser
-        self.apiClient = apiClient
+        self.apiClient = apiClient ?? PokemonTCGAPIClient()
         
         setupFrameProcessing()
     }
@@ -181,10 +181,28 @@ final class ScannerViewModel: ObservableObject {
             if parsedHint.hasStrongHint {
                 scannerState = .cardDetected(parsedHint)
                 
-                let matches = try await apiClient.searchCards(hint: parsedHint)
-                detectedMatches = matches
+                do {
+                    let matches = try await apiClient.searchCards(hint: parsedHint)
+                    
+                    if matches.isEmpty {
+                        print("⚠️ No cards found in API for this hint")
+                        // Keep scanning, card might not be recognized yet
+                        scannerState = .scanning
+                        detectedMatches = []
+                    } else {
+                        print("✅ Found \(matches.count) matching cards")
+                        detectedMatches = matches
+                        scannerState = .cardDetected(parsedHint)
+                    }
+                } catch {
+                    print("❌ API search error: \(error)")
+                    // Don't stop scanning on API errors
+                    scannerState = .scanning
+                    detectedMatches = []
+                }
             } else {
                 scannerState = .scanning
+                detectedMatches = []
             }
             
         } catch {

@@ -2,65 +2,105 @@
 //  AddToCollectionView.swift
 //  Decked
 //
-//  Form for adding a card to the collection
+//  Form for adding a card to the collection with Core Data
 //
 
 import SwiftUI
+import CoreData
 
 struct AddToCollectionView: View {
     
     let card: Card
     
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.managedObjectContext) private var viewContext
     @StateObject private var viewModel: AddToCollectionViewModel
     
     init(card: Card) {
         self.card = card
-        self._viewModel = StateObject(wrappedValue: AddToCollectionViewModel(card: card))
+        // Will be updated by environment
+        let context = PersistenceController.shared.viewContext
+        self._viewModel = StateObject(wrappedValue: AddToCollectionViewModel(card: card, viewContext: context))
     }
     
     var body: some View {
         NavigationStack {
             ZStack {
-                // Background
-                Color.deckBackground
-                    .ignoresSafeArea()
+                Color.deckBackground.ignoresSafeArea()
                 
-                ScrollView {
-                    VStack(spacing: 24) {
-                        // Card preview
-                        cardPreview
-                        
-                        // Form sections
-                        VStack(spacing: 20) {
-                            languageSection
-                            conditionSection
-                            foilSection
-                            quantitySection
-                            priceSection
-                            binderSection
-                        }
-                        .padding(.horizontal)
-                        
-                        // Add button
-                        addButton
-                            .padding(.horizontal)
-                            .padding(.bottom, 32)
-                    }
+                if viewModel.didSave {
+                    successView
+                } else {
+                    formContent
                 }
             }
             .navigationTitle("Add to Collection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
+                    Button(viewModel.didSave ? "Done" : "Cancel") {
                         dismiss()
                     }
                     .foregroundColor(.deckAccent)
                 }
             }
-            .toolbarBackground(Color.deckBackground, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            .sheet(isPresented: $viewModel.showingCreateBinder) {
+                CreateBinderView { _ in
+                    Task {
+                        await viewModel.loadBinders()
+                    }
+                }
+                .environment(\.managedObjectContext, viewContext)
+            }
+        }
+    }
+    
+    // MARK: - Form Content
+    
+    private var formContent: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                // Card preview
+                cardPreview
+                
+                // Form
+                VStack(spacing: 20) {
+                    // Binder selection (first!)
+                    binderSection
+                    
+                    // Card details
+                    languageSection
+                    conditionSection
+                    foilSection
+                    quantitySection
+                    priceSection
+                }
+                .padding(.horizontal)
+                
+                // Error message
+                if let error = viewModel.error {
+                    Text(error)
+                        .font(.system(.caption, design: .rounded))
+                        .foregroundColor(.deckError)
+                        .padding()
+                }
+                
+                // Add button
+                PrimaryButton(
+                    "Add to Binder",
+                    icon: "folder.badge.plus",
+                    style: .primary,
+                    isLoading: viewModel.isSaving
+                ) {
+                    Task {
+                        await viewModel.addToCollection()
+                    }
+                }
+                .disabled(!viewModel.canSave)
+                .opacity(viewModel.canSave ? 1.0 : 0.5)
+                .padding(.horizontal)
+                .padding(.bottom, 32)
+            }
         }
     }
     
@@ -68,375 +108,262 @@ struct AddToCollectionView: View {
     
     private var cardPreview: some View {
         VStack(spacing: 16) {
-            // Card image
-            AsyncImage(url: card.imageURLHighRes ?? card.imageURL) { phase in
-                switch phase {
-                case .empty:
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.deckSurface)
-                        .overlay(
-                            ProgressView()
-                                .tint(.deckAccent)
-                        )
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .overlay(
-                            DeckGradients.cardShine
-                        )
-                case .failure:
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.deckSurface)
-                        .overlay(
-                            VStack(spacing: 8) {
-                                Image(systemName: "photo")
-                                    .font(.system(size: 32))
-                                Text("Image unavailable")
-                                    .font(.caption)
-                            }
-                            .foregroundColor(.deckTextMuted)
-                        )
-                @unknown default:
-                    EmptyView()
-                }
-            }
-            .frame(height: 280)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .shadow(color: card.rarity.color.opacity(0.4), radius: 20, x: 0, y: 8)
+            CardThumbnailView(
+                imageURL: card.imageLargeURL ?? card.imageURL,
+                size: .large
+            )
+            .shadow(color: .black.opacity(0.2), radius: 12, x: 0, y: 6)
             
-            // Card info
             VStack(spacing: 8) {
                 Text(card.name)
-                    .font(.system(.title2, design: .rounded, weight: .bold))
+                    .font(.system(.title3, design: .rounded, weight: .bold))
                     .foregroundColor(.deckTextPrimary)
-                
-                Text("\(card.setName) · #\(card.number)")
-                    .font(.system(.subheadline, design: .default))
-                    .foregroundColor(.deckTextSecondary)
+                    .multilineTextAlignment(.center)
                 
                 HStack(spacing: 12) {
-                    RarityBadge(rarity: card.rarity)
+                    Text(card.setName)
+                        .font(.system(.subheadline, design: .rounded))
+                        .foregroundColor(.deckTextSecondary)
                     
-                    if let price = card.marketPrice {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chart.line.uptrend.xyaxis")
-                                .font(.system(size: 12))
-                            Text(String(format: "$%.2f", price))
-                                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                        }
+                    Text("•")
+                        .foregroundColor(.deckTextMuted)
+                    
+                    Text("#\(card.number)")
+                        .font(.system(.subheadline, design: .rounded, weight: .medium))
                         .foregroundColor(.deckAccent)
+                }
+                
+                RarityBadge(rarity: card.rarity)
+            }
+        }
+        .padding(.top, 24)
+    }
+    
+    // MARK: - Binder Section
+    
+    private var binderSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Binder", systemImage: "folder")
+                .font(.system(.headline, design: .rounded, weight: .semibold))
+                .foregroundColor(.deckTextPrimary)
+            
+            if viewModel.binders.isEmpty {
+                // No binders yet
+                Button {
+                    viewModel.showingCreateBinder = true
+                } label: {
+                    HStack {
+                        Image(systemName: "folder.badge.plus")
+                        Text("Create Your First Binder")
+                        Spacer()
                     }
+                    .font(.system(.body, design: .rounded, weight: .medium))
+                    .foregroundColor(.deckAccent)
+                    .padding()
+                    .background(Color.deckSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+            } else {
+                // Binder picker
+                Menu {
+                    ForEach(viewModel.binders) { binder in
+                        Button {
+                            viewModel.selectedBinder = binder
+                        } label: {
+                            HStack {
+                                Text(binder.title)
+                                if viewModel.selectedBinder?.id == binder.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    Button {
+                        viewModel.showingCreateBinder = true
+                    } label: {
+                        Label("Create New Binder", systemImage: "plus")
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: "folder")
+                            .foregroundColor(.deckAccent)
+                        
+                        Text(viewModel.selectedBinder?.title ?? "Select a binder")
+                            .foregroundColor(viewModel.selectedBinder != nil ? .deckTextPrimary : .deckTextMuted)
+                        
+                        Spacer()
+                        
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.deckTextSecondary)
+                    }
+                    .padding()
+                    .background(Color.deckSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             }
         }
         .padding()
+        .background(Color.deckSurface.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
     
     // MARK: - Language Section
     
     private var languageSection: some View {
-        FormSection(title: "Language") {
-            HStack(spacing: 12) {
-                ForEach([CardLanguage.english, .spanish, .japanese], id: \.self) { language in
-                    LanguageButton(
-                        language: language,
-                        isSelected: viewModel.selectedLanguage == language
-                    ) {
-                        viewModel.selectedLanguage = language
-                    }
+        FormSectionView(title: "Language", icon: "globe") {
+            Picker("Language", selection: $viewModel.selectedLanguage) {
+                ForEach(CardLanguage.allCases, id: \.self) { language in
+                    Text(language.displayName).tag(language)
                 }
             }
+            .pickerStyle(.segmented)
         }
     }
     
     // MARK: - Condition Section
     
     private var conditionSection: some View {
-        FormSection(title: "Condition") {
-            HStack(spacing: 8) {
+        FormSectionView(title: "Condition", icon: "star.fill") {
+            Picker("Condition", selection: $viewModel.selectedCondition) {
                 ForEach(CardCondition.allCases, id: \.self) { condition in
-                    ConditionButton(
-                        condition: condition,
-                        isSelected: viewModel.selectedCondition == condition
-                    ) {
-                        viewModel.selectedCondition = condition
-                    }
+                    Text(condition.shortCode).tag(condition)
                 }
             }
+            .pickerStyle(.segmented)
         }
     }
     
     // MARK: - Foil Section
     
     private var foilSection: some View {
-        FormSection(title: "Finish") {
-            HStack(spacing: 16) {
-                FinishButton(
-                    title: "Regular",
-                    icon: "square",
-                    isSelected: !viewModel.isFoil
-                ) {
-                    viewModel.isFoil = false
-                }
-                
-                FinishButton(
-                    title: "Foil",
-                    icon: "sparkles",
-                    isSelected: viewModel.isFoil
-                ) {
-                    viewModel.isFoil = true
-                }
-            }
+        FormSectionView(title: "Finish", icon: "sparkles") {
+            Toggle("Foil / Holographic", isOn: $viewModel.isFoil)
+                .tint(.deckAccent)
         }
     }
     
     // MARK: - Quantity Section
     
     private var quantitySection: some View {
-        FormSection(title: "Quantity") {
-            HStack {
-                Button {
-                    if viewModel.quantity > 1 {
-                        viewModel.quantity -= 1
-                    }
-                } label: {
-                    Image(systemName: "minus")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.deckTextPrimary)
-                        .frame(width: 44, height: 44)
-                        .background(Color.deckSurfaceElevated)
-                        .clipShape(Circle())
-                }
-                
-                Spacer()
-                
-                Text("\(viewModel.quantity)")
-                    .font(.system(.title, design: .rounded, weight: .bold))
-                    .foregroundColor(.deckTextPrimary)
-                    .frame(minWidth: 60)
-                
-                Spacer()
-                
-                Button {
-                    if viewModel.quantity < 99 {
-                        viewModel.quantity += 1
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.deckTextPrimary)
-                        .frame(width: 44, height: 44)
-                        .background(Color.deckSurfaceElevated)
-                        .clipShape(Circle())
-                }
-            }
-            .padding(.horizontal, 24)
+        FormSectionView(title: "Quantity", icon: "number") {
+            Stepper("\(viewModel.quantity)", value: $viewModel.quantity, in: 1...99)
+                .font(.system(.body, design: .rounded, weight: .medium))
         }
     }
     
     // MARK: - Price Section
     
     private var priceSection: some View {
-        FormSection(title: "Price Paid (Optional)") {
-            VStack(spacing: 12) {
+        FormSectionView(title: "Price", icon: "dollarsign.circle") {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("$")
-                        .font(.system(.title2, design: .rounded, weight: .semibold))
-                        .foregroundColor(.deckTextMuted)
+                        .foregroundColor(.deckTextSecondary)
                     
                     TextField("0.00", text: $viewModel.pricePaid)
-                        .font(.system(.title2, design: .rounded, weight: .semibold))
-                        .foregroundColor(.deckTextPrimary)
                         .keyboardType(.decimalPad)
-                        .multilineTextAlignment(.leading)
+                        .font(.system(.body, design: .rounded))
                 }
                 .padding()
-                .background(Color.deckSurfaceElevated)
+                .background(Color.deckSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 
                 if let marketPrice = card.marketPrice {
                     HStack {
-                        Text("Market price:")
-                            .font(.system(.caption, design: .default))
-                            .foregroundColor(.deckTextMuted)
+                        Text("Market Price:")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundColor(.deckTextSecondary)
                         
                         Text(String(format: "$%.2f", marketPrice))
-                            .font(.system(.caption, design: .rounded, weight: .semibold))
-                            .foregroundColor(.deckAccent)
-                        
-                        Spacer()
-                        
-                        Button("Use market price") {
-                            viewModel.pricePaid = String(format: "%.2f", marketPrice)
-                        }
-                        .font(.system(.caption, design: .default, weight: .medium))
-                        .foregroundColor(.deckAccent)
+                            .font(.system(.caption, design: .rounded, weight: .medium))
+                            .foregroundColor(.deckSuccess)
                     }
                 }
             }
         }
     }
     
-    // MARK: - Binder Section
+    // MARK: - Success View
     
-    private var binderSection: some View {
-        FormSection(title: "Add to Binder") {
-            HStack {
-                Image(systemName: "folder")
-                    .font(.system(size: 18))
-                    .foregroundColor(.deckAccent)
+    private var successView: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            
+            ZStack {
+                Circle()
+                    .fill(DeckGradients.successGradient)
+                    .frame(width: 100, height: 100)
+                    .shadow(color: .deckSuccess.opacity(0.3), radius: 20)
                 
-                Text(viewModel.selectedBinder?.name ?? "No binder selected")
-                    .font(.system(.body, design: .default))
+                Image(systemName: "checkmark")
+                    .font(.system(size: 48, weight: .bold))
+                    .foregroundColor(.white)
+            }
+            
+            VStack(spacing: 8) {
+                Text("Card Added!")
+                    .font(.system(.title, design: .rounded, weight: .bold))
                     .foregroundColor(.deckTextPrimary)
                 
-                Spacer()
-                
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.deckTextMuted)
+                Text("Added to \(viewModel.selectedBinder?.title ?? "binder")")
+                    .font(.system(.body, design: .rounded))
+                    .foregroundColor(.deckTextSecondary)
             }
-            .padding()
-            .background(Color.deckSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-    }
-    
-    // MARK: - Add Button
-    
-    private var addButton: some View {
-        Button {
-            Task {
-                await viewModel.addToCollection()
-                dismiss()
-            }
-        } label: {
-            HStack {
-                Image(systemName: "plus.circle.fill")
-                Text("Add to Collection")
-            }
-            .font(.system(.headline, design: .rounded, weight: .semibold))
-            .foregroundColor(.deckBackground)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(DeckGradients.accentGradient)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .shadow(color: .deckAccentGlow, radius: 10)
+            
+            Spacer()
         }
     }
 }
 
-// MARK: - Form Section
+// MARK: - Form Section View
 
-struct FormSection<Content: View>: View {
+struct FormSectionView<Content: View>: View {
     let title: String
-    @ViewBuilder let content: () -> Content
+    let icon: String
+    @ViewBuilder let content: Content
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.system(.subheadline, design: .default, weight: .medium))
-                .foregroundColor(.deckTextSecondary)
+            Label(title, systemImage: icon)
+                .font(.system(.headline, design: .rounded, weight: .semibold))
+                .foregroundColor(.deckTextPrimary)
             
-            content()
+            content
         }
-    }
-}
-
-// MARK: - Language Button
-
-struct LanguageButton: View {
-    let language: CardLanguage
-    let isSelected: Bool
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 6) {
-                Text(language.flag)
-                    .font(.system(size: 24))
-                
-                Text(language.rawValue)
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
-                    .foregroundColor(isSelected ? .deckAccent : .deckTextSecondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(isSelected ? Color.deckAccent.opacity(0.15) : Color.deckSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(isSelected ? Color.deckAccent : Color.clear, lineWidth: 2)
-            )
-        }
-    }
-}
-
-// MARK: - Condition Button
-
-struct ConditionButton: View {
-    let condition: CardCondition
-    let isSelected: Bool
-    let action: () -> Void
-    
-    var conditionColor: Color {
-        switch condition {
-        case .nearMint: return .conditionNM
-        case .lightlyPlayed: return .conditionLP
-        case .moderatelyPlayed: return .conditionMP
-        case .heavilyPlayed: return .conditionHP
-        case .damaged: return .deckError
-        }
-    }
-    
-    var body: some View {
-        Button(action: action) {
-            Text(condition.shortName)
-                .font(.system(.caption, design: .rounded, weight: .bold))
-                .foregroundColor(isSelected ? .deckBackground : conditionColor)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(isSelected ? conditionColor : conditionColor.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
-}
-
-// MARK: - Finish Button
-
-struct FinishButton: View {
-    let title: String
-    let icon: String
-    let isSelected: Bool
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 16))
-                
-                Text(title)
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
-            }
-            .foregroundColor(isSelected ? .deckAccent : .deckTextSecondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(isSelected ? Color.deckAccent.opacity(0.15) : Color.deckSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(isSelected ? Color.deckAccent : Color.clear, lineWidth: 2)
-            )
-        }
+        .padding()
+        .background(Color.deckSurface.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
 
 // MARK: - Preview
 
 #Preview {
-    AddToCollectionView(
-        card: MockCardData.allCards.first { $0.id == "sv3-215" }!
-    )
+    AddToCollectionView(card: Card(
+        id: "base1-4",
+        name: "Charizard",
+        setId: "base1",
+        setName: "Base Set",
+        number: "4",
+        rarity: .holo,
+        imageURL: URL(string: "https://images.pokemontcg.io/base1/4.png"),
+        imageURLHighRes: URL(string: "https://images.pokemontcg.io/base1/4_hires.png"),
+        artist: nil,
+        supertype: nil,
+        subtypes: nil,
+        hp: nil,
+        types: nil,
+        nationalPokedexNumber: nil,
+        marketPrice: 150.0,
+        lowPrice: nil,
+        highPrice: nil,
+        setSeries: nil,
+        setReleaseDate: nil,
+        setTotalCards: nil
+    ))
+    .environment(\.managedObjectContext, PersistenceController.preview.viewContext)
 }

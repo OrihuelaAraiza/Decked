@@ -2,12 +2,14 @@
 //  AddToCollectionViewModel.swift
 //  Decked
 //
-//  ViewModel for adding cards to collection
+//  ViewModel for adding cards to collection with Core Data
 //
 
 import Foundation
 import Combine
+import CoreData
 
+@MainActor
 final class AddToCollectionViewModel: ObservableObject {
     
     // MARK: - Published Properties
@@ -17,16 +19,18 @@ final class AddToCollectionViewModel: ObservableObject {
     @Published var isFoil: Bool = false
     @Published var quantity: Int = 1
     @Published var pricePaid: String = ""
-    @Published var selectedBinder: Binder?
-    @Published var notes: String = ""
+    @Published var selectedBinder: BinderEntity?
+    @Published var binders: [BinderEntity] = []
+    @Published var showingCreateBinder = false
     
     @Published private(set) var isSaving = false
     @Published private(set) var error: String?
+    @Published private(set) var didSave = false
     
     // MARK: - Properties
     
     let card: Card
-    private let collectionService: CollectionServiceProtocol
+    private let viewContext: NSManagedObjectContext
     
     // MARK: - Computed Properties
     
@@ -34,155 +38,126 @@ final class AddToCollectionViewModel: ObservableObject {
         Double(pricePaid)
     }
     
-    var estimatedValue: Double? {
-        guard let marketPrice = card.marketPrice else { return nil }
-        return marketPrice * selectedCondition.conditionMultiplier * Double(quantity)
-    }
-    
-    var totalPricePaid: Double? {
-        guard let price = pricePaidValue else { return nil }
-        return price * Double(quantity)
+    var canSave: Bool {
+        selectedBinder != nil && !isSaving
     }
     
     // MARK: - Initialization
     
-    init(card: Card, collectionService: CollectionServiceProtocol = CollectionService.shared) {
+    init(card: Card, viewContext: NSManagedObjectContext) {
         self.card = card
-        self.collectionService = collectionService
+        self.viewContext = viewContext
+        Task {
+            await loadBinders()
+        }
     }
     
     // MARK: - Public Methods
     
-    @MainActor
+    func loadBinders() async {
+        let request = BinderEntity.fetchRequest()
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \BinderEntity.createdAt, ascending: false)
+        ]
+        
+        do {
+            binders = try viewContext.fetch(request)
+            
+            // Auto-select first binder if available
+            if selectedBinder == nil, let firstBinder = binders.first {
+                selectedBinder = firstBinder
+            }
+            
+            print("✅ Loaded \(binders.count) binders")
+        } catch {
+            print("❌ Failed to load binders: \(error)")
+            self.error = "Failed to load binders"
+        }
+    }
+    
     func addToCollection() async {
         guard !isSaving else { return }
+        guard let binder = selectedBinder else {
+            error = "Please select a binder"
+            return
+        }
         
         isSaving = true
         error = nil
         
-        let collectionCard = CollectionCard(
-            card: card,
-            language: selectedLanguage,
-            condition: selectedCondition,
-            isFoil: isFoil,
-            quantity: quantity,
-            pricePaid: pricePaidValue,
-            dateAdded: Date(),
-            binderId: selectedBinder?.id,
-            notes: notes.isEmpty ? nil : notes
-        )
-        
         do {
-            try await collectionService.addCard(collectionCard)
+            // 1. Upsert CatalogCardEntity
+            let catalogCard = try upsertCatalogCard()
+            
+            // 2. Create OwnedCardEntity
+            let ownedCard = OwnedCardEntity(context: viewContext)
+            ownedCard.id = UUID()
+            ownedCard.languageEnum = selectedLanguage
+            ownedCard.conditionEnum = selectedCondition
+            ownedCard.isFoil = isFoil
+            ownedCard.quantity = Int16(quantity)
+            ownedCard.purchasePrice = pricePaidValue ?? 0
+            ownedCard.suggestedPrice = card.marketPrice ?? 0
+            ownedCard.createdAt = Date()
+            ownedCard.catalogCard = catalogCard
+            ownedCard.binder = binder
+            
+            // 3. Save
+            try viewContext.save()
+            
+            print("✅ Added card to collection")
+            didSave = true
+            
         } catch {
-            self.error = error.localizedDescription
+            print("❌ Failed to add card: \(error)")
+            self.error = "Failed to add card: \(error.localizedDescription)"
         }
         
         isSaving = false
     }
     
-    @MainActor
-    func loadBinders() async {
-        // Load available binders for selection
-        // TODO: Implement when binder service is ready
-    }
-}
-
-// MARK: - Collection Service Protocol
-
-protocol CollectionServiceProtocol {
-    func addCard(_ card: CollectionCard) async throws
-    func removeCard(_ cardId: UUID) async throws
-    func getCards() async -> [CollectionCard]
-    func getCard(_ id: UUID) async -> CollectionCard?
-}
-
-// MARK: - Collection Service (UserDefaults-based for MVP)
-
-final class CollectionService: CollectionServiceProtocol {
-    
-    static let shared = CollectionService()
-    
-    private let userDefaults = UserDefaults.standard
-    private let collectionKey = "decked_collection"
-    
-    private init() {}
-    
-    func addCard(_ card: CollectionCard) async throws {
-        var cards = await getCards()
-        
-        // Check if card already exists with same attributes
-        if let existingIndex = cards.firstIndex(where: {
-            $0.card.id == card.card.id &&
-            $0.language == card.language &&
-            $0.condition == card.condition &&
-            $0.isFoil == card.isFoil
-        }) {
-            // Update quantity
-            var existingCard = cards[existingIndex]
-            existingCard = CollectionCard(
-                id: existingCard.id,
-                card: existingCard.card,
-                language: existingCard.language,
-                condition: existingCard.condition,
-                isFoil: existingCard.isFoil,
-                quantity: existingCard.quantity + card.quantity,
-                pricePaid: card.pricePaid ?? existingCard.pricePaid,
-                dateAdded: existingCard.dateAdded,
-                binderId: card.binderId ?? existingCard.binderId,
-                notes: card.notes ?? existingCard.notes
-            )
-            cards[existingIndex] = existingCard
-        } else {
-            cards.append(card)
-        }
-        
-        try saveCards(cards)
-    }
-    
-    func removeCard(_ cardId: UUID) async throws {
-        var cards = await getCards()
-        cards.removeAll { $0.id == cardId }
-        try saveCards(cards)
-    }
-    
-    func getCards() async -> [CollectionCard] {
-        guard let data = userDefaults.data(forKey: collectionKey) else {
-            return []
-        }
+    func createNewBinder(title: String) async {
+        let binder = BinderEntity(context: viewContext)
+        binder.id = UUID()
+        binder.title = title
+        binder.createdAt = Date()
         
         do {
-            let cards = try JSONDecoder().decode([CollectionCard].self, from: data)
-            return cards
+            try viewContext.save()
+            await loadBinders()
+            selectedBinder = binder
+            print("✅ Created new binder: \(title)")
         } catch {
-            print("Failed to decode collection: \(error)")
-            return []
+            print("❌ Failed to create binder: \(error)")
+            self.error = "Failed to create binder"
         }
     }
     
-    func getCard(_ id: UUID) async -> CollectionCard? {
-        let cards = await getCards()
-        return cards.first { $0.id == id }
-    }
+    // MARK: - Private Methods
     
-    private func saveCards(_ cards: [CollectionCard]) throws {
-        let data = try JSONEncoder().encode(cards)
-        userDefaults.set(data, forKey: collectionKey)
-    }
-}
-
-// MARK: - Collection Errors
-
-enum CollectionError: LocalizedError {
-    case saveFailed
-    case cardNotFound
-    
-    var errorDescription: String? {
-        switch self {
-        case .saveFailed:
-            return "Failed to save card to collection"
-        case .cardNotFound:
-            return "Card not found in collection"
+    private func upsertCatalogCard() throws -> CatalogCardEntity {
+        // Check if catalog card already exists
+        let request = CatalogCardEntity.fetchRequest()
+        request.predicate = NSPredicate(format: "id == %@", card.id)
+        request.fetchLimit = 1
+        
+        if let existing = try viewContext.fetch(request).first {
+            print("📚 Using existing catalog card: \(card.name)")
+            return existing
         }
+        
+        // Create new catalog card
+        let catalogCard = CatalogCardEntity(context: viewContext)
+        catalogCard.id = card.id
+        catalogCard.name = card.name
+        catalogCard.setId = card.setId
+        catalogCard.setName = card.setName
+        catalogCard.number = card.number
+        catalogCard.rarity = card.rarity.rawValue
+        catalogCard.imageSmallURL = card.imageURL?.absoluteString
+        catalogCard.imageLargeURL = card.imageLargeURL?.absoluteString
+        
+        print("📚 Created new catalog card: \(card.name)")
+        return catalogCard
     }
 }
