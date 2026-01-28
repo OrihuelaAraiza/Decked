@@ -12,10 +12,10 @@ import SwiftUI
 
 // MARK: - Camera Service Protocol
 protocol CameraServiceProtocol: AnyObject {
-    var previewLayer: AVCaptureVideoPreviewLayer? { get }
     var isRunning: Bool { get }
     var framePublisher: AnyPublisher<UIImage, Never> { get }
     
+    func getPreviewLayer() -> AVCaptureVideoPreviewLayer?
     func startSession() async throws
     func stopSession()
     func pauseCapture()
@@ -29,13 +29,16 @@ final class CameraService: NSObject, CameraServiceProtocol {
     private let captureSession = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "com.decked.camera.session")
-    private let processingQueue = DispatchQueue(label: "com.decked.camera.processing")
     
     private let frameSubject = PassthroughSubject<UIImage, Never>()
     private let lock = NSLock()
     
+    // Thread-safe properties
     private var _lastCaptureTime: Date = .distantPast
     private var _isPaused = false
+    private var _captureInterval: TimeInterval = 0.75
+    private var _previewLayer: AVCaptureVideoPreviewLayer?
+    private var _isConfigured = false
     
     private var lastCaptureTime: Date {
         get { lock.withLock { _lastCaptureTime } }
@@ -48,9 +51,10 @@ final class CameraService: NSObject, CameraServiceProtocol {
     }
     
     /// Minimum interval between frame captures (throttle)
-    var captureInterval: TimeInterval = 0.75
-    
-    private(set) var previewLayer: AVCaptureVideoPreviewLayer?
+    var captureInterval: TimeInterval {
+        get { lock.withLock { _captureInterval } }
+        set { lock.withLock { _captureInterval = newValue } }
+    }
     
     var isRunning: Bool {
         captureSession.isRunning
@@ -66,32 +70,60 @@ final class CameraService: NSObject, CameraServiceProtocol {
     }
     
     // MARK: - Public Methods
-    @MainActor
+    
+    func getPreviewLayer() -> AVCaptureVideoPreviewLayer? {
+        lock.withLock { _previewLayer }
+    }
+    
     func startSession() async throws {
+        print("📸 CameraService: Starting session...")
+        
         // Check authorization
         let status = AVCaptureDevice.authorizationStatus(for: .video)
         
+        print("📸 CameraService: Authorization status: \(status.rawValue)")
+        
         switch status {
         case .notDetermined:
+            print("📸 CameraService: Requesting camera access...")
             let granted = await AVCaptureDevice.requestAccess(for: .video)
+            print("📸 CameraService: Access granted: \(granted)")
             guard granted else {
                 throw CameraError.accessDenied
             }
         case .denied, .restricted:
+            print("📸 CameraService: Access denied or restricted")
             throw CameraError.accessDenied
         case .authorized:
+            print("📸 CameraService: Already authorized")
             break
         @unknown default:
             throw CameraError.unknown
         }
         
-        // Configure session
-        try configureSession()
+        // Configure session if not already configured
+        let needsConfiguration = lock.withLock { !_isConfigured }
+        
+        if needsConfiguration {
+            print("📸 CameraService: Configuring session...")
+            try await configureSession()
+            lock.withLock { _isConfigured = true }
+            print("📸 CameraService: Session configured successfully")
+        }
         
         // Start running
+        print("📸 CameraService: Starting capture session...")
         await withCheckedContinuation { continuation in
             sessionQueue.async { [weak self] in
-                self?.captureSession.startRunning()
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
+                
+                if !self.captureSession.isRunning {
+                    self.captureSession.startRunning()
+                    print("📸 CameraService: Capture session started")
+                }
                 continuation.resume()
             }
         }
@@ -100,74 +132,128 @@ final class CameraService: NSObject, CameraServiceProtocol {
     func stopSession() {
         sessionQueue.async { [weak self] in
             self?.captureSession.stopRunning()
+            print("📸 CameraService: Session stopped")
         }
     }
     
     func pauseCapture() {
         isPaused = true
+        print("📸 CameraService: Capture paused")
     }
     
     func resumeCapture() {
         isPaused = false
+        print("📸 CameraService: Capture resumed")
     }
     
     // MARK: - Private Methods
-    private func configureSession() throws {
-        captureSession.beginConfiguration()
-        defer { captureSession.commitConfiguration() }
+    private func configureSession() async throws {
+        print("📸 CameraService: Beginning configuration...")
         
-        // Set session preset for high quality
-        captureSession.sessionPreset = .hd1920x1080
-        
-        // Add video input
-        guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
-            throw CameraError.deviceNotFound
-        }
-        
-        // Configure device for optimal card scanning
-        try videoDevice.lockForConfiguration()
-        
-        if videoDevice.isFocusModeSupported(.continuousAutoFocus) {
-            videoDevice.focusMode = .continuousAutoFocus
-        }
-        
-        if videoDevice.isExposureModeSupported(.continuousAutoExposure) {
-            videoDevice.exposureMode = .continuousAutoExposure
-        }
-        
-        videoDevice.unlockForConfiguration()
-        
-        let videoInput = try AVCaptureDeviceInput(device: videoDevice)
-        
-        guard captureSession.canAddInput(videoInput) else {
-            throw CameraError.configurationFailed
-        }
-        captureSession.addInput(videoInput)
-        
-        // Configure video output
-        videoOutput.setSampleBufferDelegate(self, queue: processingQueue)
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        videoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-        ]
-        
-        guard captureSession.canAddOutput(videoOutput) else {
-            throw CameraError.configurationFailed
-        }
-        captureSession.addOutput(videoOutput)
-        
-        // Configure video connection
-        if let connection = videoOutput.connection(with: .video) {
-            connection.videoRotationAngle = 90 // Portrait orientation
-            if connection.isVideoStabilizationSupported {
-                connection.preferredVideoStabilizationMode = .auto
+        return try await withCheckedThrowingContinuation { continuation in
+            sessionQueue.async { [weak self] in
+                guard let self = self else {
+                    print("❌ CameraService: Self is nil")
+                    continuation.resume(throwing: CameraError.unknown)
+                    return
+                }
+                
+                do {
+                    self.captureSession.beginConfiguration()
+                    
+                    // Set session preset for high quality
+                    if self.captureSession.canSetSessionPreset(.hd1920x1080) {
+                        self.captureSession.sessionPreset = .hd1920x1080
+                        print("📸 CameraService: Set preset to HD 1080p")
+                    } else {
+                        self.captureSession.sessionPreset = .high
+                        print("📸 CameraService: Set preset to high")
+                    }
+                    
+                    // Add video input
+                    guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+                        print("❌ CameraService: No video device found")
+                        self.captureSession.commitConfiguration()
+                        continuation.resume(throwing: CameraError.deviceNotFound)
+                        return
+                    }
+                    
+                    print("📸 CameraService: Video device found: \(videoDevice.localizedName)")
+                    
+                    // Configure device for optimal card scanning
+                    try videoDevice.lockForConfiguration()
+                    
+                    if videoDevice.isFocusModeSupported(.continuousAutoFocus) {
+                        videoDevice.focusMode = .continuousAutoFocus
+                        print("📸 CameraService: Set continuous autofocus")
+                    }
+                    
+                    if videoDevice.isExposureModeSupported(.continuousAutoExposure) {
+                        videoDevice.exposureMode = .continuousAutoExposure
+                        print("📸 CameraService: Set continuous auto exposure")
+                    }
+                    
+                    videoDevice.unlockForConfiguration()
+                    
+                    let videoInput = try AVCaptureDeviceInput(device: videoDevice)
+                    
+                    guard self.captureSession.canAddInput(videoInput) else {
+                        print("❌ CameraService: Cannot add video input")
+                        self.captureSession.commitConfiguration()
+                        continuation.resume(throwing: CameraError.configurationFailed)
+                        return
+                    }
+                    
+                    self.captureSession.addInput(videoInput)
+                    print("📸 CameraService: Video input added")
+                    
+                    // Configure video output
+                    self.videoOutput.setSampleBufferDelegate(self, queue: self.sessionQueue)
+                    self.videoOutput.alwaysDiscardsLateVideoFrames = true
+                    self.videoOutput.videoSettings = [
+                        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+                    ]
+                    
+                    guard self.captureSession.canAddOutput(self.videoOutput) else {
+                        print("❌ CameraService: Cannot add video output")
+                        self.captureSession.commitConfiguration()
+                        continuation.resume(throwing: CameraError.configurationFailed)
+                        return
+                    }
+                    
+                    self.captureSession.addOutput(self.videoOutput)
+                    print("📸 CameraService: Video output added")
+                    
+                    // Configure video connection
+                    if let connection = self.videoOutput.connection(with: .video) {
+                        connection.videoRotationAngle = 90 // Portrait orientation
+                        if connection.isVideoStabilizationSupported {
+                            connection.preferredVideoStabilizationMode = .auto
+                        }
+                        print("📸 CameraService: Video connection configured")
+                    }
+                    
+                    self.captureSession.commitConfiguration()
+                    print("📸 CameraService: Configuration committed")
+                    
+                    // Create preview layer on main thread
+                    DispatchQueue.main.async {
+                        let layer = AVCaptureVideoPreviewLayer(session: self.captureSession)
+                        layer.videoGravity = .resizeAspectFill
+                        self.lock.withLock {
+                            self._previewLayer = layer
+                        }
+                        print("📸 CameraService: Preview layer created")
+                        continuation.resume()
+                    }
+                    
+                } catch {
+                    print("❌ CameraService: Configuration error: \(error)")
+                    self.captureSession.commitConfiguration()
+                    continuation.resume(throwing: CameraError.configurationFailed)
+                }
             }
         }
-        
-        // Create preview layer
-        let layer = AVCaptureVideoPreviewLayer(session: captureSession)
-        layer.videoGravity = .resizeAspectFill
-        self.previewLayer = layer
     }
 }
 
@@ -183,7 +269,8 @@ extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
         
         // Throttle frame capture
         let now = Date()
-        guard now.timeIntervalSince(lastCaptureTime) >= captureInterval else { return }
+        let interval = captureInterval
+        guard now.timeIntervalSince(lastCaptureTime) >= interval else { return }
         lastCaptureTime = now
         
         // Convert to UIImage
@@ -230,21 +317,47 @@ enum CameraError: LocalizedError {
 struct CameraPreviewView: UIViewRepresentable {
     let previewLayer: AVCaptureVideoPreviewLayer?
     
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
+    func makeUIView(context: Context) -> PreviewContainerView {
+        let view = PreviewContainerView()
         view.backgroundColor = .black
-        
-        if let previewLayer = previewLayer {
-            previewLayer.frame = view.bounds
-            view.layer.addSublayer(previewLayer)
-        }
-        
+        print("📱 CameraPreviewView: makeUIView called, previewLayer: \(previewLayer != nil ? "YES" : "NO")")
         return view
     }
     
-    func updateUIView(_ uiView: UIView, context: Context) {
-        DispatchQueue.main.async {
-            previewLayer?.frame = uiView.bounds
+    func updateUIView(_ uiView: PreviewContainerView, context: Context) {
+        print("📱 CameraPreviewView: updateUIView called, previewLayer: \(previewLayer != nil ? "YES" : "NO")")
+        
+        // Remove old layer if exists
+        if let oldLayer = uiView.previewLayer, oldLayer !== previewLayer {
+            print("📱 CameraPreviewView: Removing old layer")
+            oldLayer.removeFromSuperlayer()
+            uiView.previewLayer = nil
         }
+        
+        // Add new layer if not already added
+        if let previewLayer = previewLayer, uiView.previewLayer !== previewLayer {
+            print("📱 CameraPreviewView: Adding new preview layer")
+            previewLayer.frame = uiView.bounds
+            uiView.layer.insertSublayer(previewLayer, at: 0)
+            uiView.previewLayer = previewLayer
+        }
+        
+        // Update frame
+        if let previewLayer = uiView.previewLayer {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            previewLayer.frame = uiView.bounds
+            CATransaction.commit()
+        }
+    }
+}
+
+// Container view to hold the preview layer
+class PreviewContainerView: UIView {
+    weak var previewLayer: AVCaptureVideoPreviewLayer?
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        previewLayer?.frame = bounds
     }
 }

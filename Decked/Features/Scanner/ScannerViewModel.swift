@@ -10,6 +10,7 @@ import Combine
 import UIKit
 import AVFoundation
 
+@MainActor
 final class ScannerViewModel: ObservableObject {
     
     // MARK: - Published Properties
@@ -20,6 +21,7 @@ final class ScannerViewModel: ObservableObject {
     @Published private(set) var isProcessing = false
     @Published var showDebugOverlay = false
     @Published var recognizedTextLines: [String] = []
+    @Published private(set) var previewLayer: AVCaptureVideoPreviewLayer?
     
     // MARK: - Services
     
@@ -32,12 +34,6 @@ final class ScannerViewModel: ObservableObject {
     
     private var cancellables = Set<AnyCancellable>()
     private var isScanning = false
-    
-    // MARK: - Computed Properties
-    
-    var previewLayer: AVCaptureVideoPreviewLayer? {
-        cameraService.previewLayer
-    }
     
     var statusText: String {
         scannerState.statusText
@@ -68,39 +64,47 @@ final class ScannerViewModel: ObservableObject {
     
     // MARK: - Public Methods
     
-    @MainActor
     func startScanning() async {
         guard !isScanning else { return }
         
         do {
+            print("🎬 ScannerViewModel: Starting scanning...")
             scannerState = .scanning
             try await cameraService.startSession()
-            isScanning = true
+            
+            // Wait a bit and get preview layer
+            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+            previewLayer = cameraService.getPreviewLayer()
+            
+            if previewLayer != nil {
+                print("✅ ScannerViewModel: Preview layer obtained")
+                isScanning = true
+            } else {
+                print("⚠️ ScannerViewModel: Preview layer is nil")
+                isScanning = true // Still mark as scanning
+            }
         } catch {
+            print("❌ ScannerViewModel: Error starting scanning: \(error)")
             scannerState = .error(error.localizedDescription)
         }
     }
     
-    @MainActor
     func stopScanning() {
         cameraService.stopSession()
         isScanning = false
         scannerState = .idle
     }
     
-    @MainActor
     func pauseScanning() {
         cameraService.pauseCapture()
         scannerState = .idle
     }
     
-    @MainActor
     func resumeScanning() {
         cameraService.resumeCapture()
         scannerState = .scanning
     }
     
-    @MainActor
     func togglePause() {
         if scannerState == .scanning {
             pauseScanning()
@@ -109,7 +113,6 @@ final class ScannerViewModel: ObservableObject {
         }
     }
     
-    @MainActor
     func clearResults() {
         lastScanResult = nil
         detectedMatches = []
@@ -120,7 +123,6 @@ final class ScannerViewModel: ObservableObject {
     }
     
     /// Manually trigger search with current hint
-    @MainActor
     func searchWithCurrentHint() async {
         guard let hint = lastScanResult?.parsedHint, hint.hasStrongHint else { return }
         
@@ -147,7 +149,6 @@ final class ScannerViewModel: ObservableObject {
             .store(in: &cancellables)
     }
     
-    @MainActor
     private func processFrame(_ image: UIImage) async {
         guard !isProcessing else { return }
         
