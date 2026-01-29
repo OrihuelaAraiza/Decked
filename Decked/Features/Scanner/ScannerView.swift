@@ -11,11 +11,8 @@ import AVFoundation
 struct ScannerView: View {
     
     @StateObject private var viewModel = ScannerViewModel()
-    @State private var showingResults = false
-    @State private var selectedMatch: CardMatch?
-    
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $viewModel.navigationPath) {
             ZStack {
                 // Background
                 Color.deckBackground
@@ -64,19 +61,31 @@ struct ScannerView: View {
             .onDisappear {
                 viewModel.stopScanning()
             }
-            .sheet(isPresented: $showingResults) {
-                if !viewModel.detectedMatches.isEmpty {
-                    ResultsListView(
-                        matches: viewModel.detectedMatches,
-                        onSelect: { match in
-                            selectedMatch = match
-                            showingResults = false
+            .onChange(of: viewModel.navigationPath) { path in
+                if path.isEmpty {
+                    viewModel.resumeScanningAfterResults()
+                }
+            }
+            .navigationDestination(for: ScannerRoute.self) { route in
+                switch route {
+                case .results(let matches):
+                    ResultsListView(matches: matches)
+                case .detail(let match):
+                    CardDetailView(match: match)
+                case .noResults(let hint, let attemptedQueries, let warning):
+                    NoResultsView(
+                        hint: hint,
+                        attemptedQueries: attemptedQueries,
+                        warning: warning,
+                        autoConfirmSingleMatch: viewModel.autoConfirmSingleMatch,
+                        onShowResults: { matches in
+                            viewModel.navigationPath.append(.results(matches))
+                        },
+                        onShowDetail: { match in
+                            viewModel.navigationPath.append(.detail(match))
                         }
                     )
                 }
-            }
-            .sheet(item: $selectedMatch) { match in
-                AddToCollectionView(card: match.card)
             }
         }
     }
@@ -261,7 +270,7 @@ struct ScannerView: View {
             // Detected card preview
             if let topMatch = viewModel.topMatch {
                 DetectedCardPreview(match: topMatch) {
-                    showingResults = true
+                    viewModel.pushResults()
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -281,6 +290,10 @@ struct ScannerView: View {
             return .deckWarning
         case .cardDetected:
             return .deckSuccess
+        case .showingResults:
+            return .deckSuccess
+        case .noResults:
+            return .deckWarning
         case .error:
             return .deckError
         }
@@ -321,9 +334,6 @@ struct ScannerView: View {
             Button {
                 Task {
                     await viewModel.searchWithCurrentHint()
-                    if viewModel.shouldShowResults {
-                        showingResults = true
-                    }
                 }
             } label: {
                 Image(systemName: "magnifyingglass")

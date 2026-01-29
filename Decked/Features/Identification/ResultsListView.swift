@@ -10,35 +10,36 @@ import SwiftUI
 struct ResultsListView: View {
     
     let matches: [CardMatch]
-    let onSelect: (CardMatch) -> Void
     
     @Environment(\.dismiss) private var dismiss
+    @State private var selectedMatch: CardMatch?
     
     var body: some View {
-        NavigationStack {
-            ZStack {
-                // Background
-                Color.deckBackground
-                    .ignoresSafeArea()
-                
-                if matches.isEmpty {
-                    emptyState
-                } else {
-                    resultsList
-                }
+        ZStack {
+            // Background
+            Color.deckBackground
+                .ignoresSafeArea()
+            
+            if matches.isEmpty {
+                emptyState
+            } else {
+                resultsList
             }
-            .navigationTitle("Results")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                    .foregroundColor(.deckAccent)
+        }
+        .navigationTitle("Results")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Cancel") {
+                    dismiss()
                 }
+                .foregroundColor(.deckAccent)
             }
-            .toolbarBackground(Color.deckBackground, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+        }
+        .toolbarBackground(Color.deckBackground, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .navigationDestination(item: $selectedMatch) { match in
+            CardDetailView(match: match)
         }
     }
     
@@ -61,7 +62,7 @@ struct ResultsListView: View {
                 // Results
                 ForEach(matches) { match in
                     ResultCardRow(match: match) {
-                        onSelect(match)
+                        selectedMatch = match
                     }
                     .padding(.horizontal)
                 }
@@ -317,7 +318,6 @@ struct ResultCardRow: View {
                 confidence: 0.78,
                 matchedFields: ["name"]
             )
-        ],
-        onSelect: { _ in }
+        ]
     )
 }

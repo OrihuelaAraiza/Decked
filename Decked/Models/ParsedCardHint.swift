@@ -30,8 +30,10 @@ struct RecognizedText: Identifiable, Hashable {
 /// Extracted information from OCR text for card identification
 struct ParsedCardHint: Hashable {
     var nameGuess: String?
+    var nameFallbacks: [String] = []
     var numberGuess: String?
     var setNumberGuess: String? // Total cards in set (e.g., "198" from "123/198")
+    var setIdGuess: String?
     var rarityGuess: CardRarity?
     var rawLines: [String]
     var language: CardLanguage?
@@ -50,6 +52,7 @@ struct ParsedCardHint: Hashable {
     var debugDescription: String {
         var parts: [String] = []
         if let name = nameGuess { parts.append("Name: \(name)") }
+        if !nameFallbacks.isEmpty { parts.append("Fallbacks: \(nameFallbacks.prefix(3).joined(separator: ", "))") }
         if let number = numberGuess { parts.append("Number: \(number)") }
         if let rarity = rarityGuess { parts.append("Rarity: \(rarity.rawValue)") }
         if let hp = hp { parts.append("HP: \(hp)") }
@@ -85,6 +88,8 @@ enum ScannerState: Equatable {
     case scanning
     case processing
     case cardDetected(ParsedCardHint)
+    case showingResults
+    case noResults
     case error(String)
     
     var statusText: String {
@@ -97,6 +102,10 @@ enum ScannerState: Equatable {
             return "Processing..."
         case .cardDetected:
             return "Card detected"
+        case .showingResults:
+            return "Results"
+        case .noResults:
+            return "No results"
         case .error(let message):
             return message
         }

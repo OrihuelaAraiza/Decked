@@ -44,5 +44,7 @@
     </array>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <key>PokemonTCGAPIKey</key>
+    <string>086b2031-1020-4b33-a570-c47a7ba6a2a9</string>
 </dict>
 </plist>

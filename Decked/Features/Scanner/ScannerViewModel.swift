@@ -22,13 +22,15 @@ final class ScannerViewModel: ObservableObject {
     @Published var showDebugOverlay = false
     @Published var recognizedTextLines: [String] = []
     @Published private(set) var previewLayer: AVCaptureVideoPreviewLayer?
+    @Published var navigationPath: [ScannerRoute] = []
+    @Published var autoConfirmSingleMatch = false
     
     // MARK: - Services
     
     let cameraService: CameraService
     private let ocrService: OCRService
     private let cardParser: CardTextParser
-    private let apiClient: PokemonTCGAPIClientProtocol
+    private let apiClient: CardSearchService
     
     // MARK: - Private Properties
     
@@ -52,12 +54,12 @@ final class ScannerViewModel: ObservableObject {
         cameraService: CameraService? = nil,
         ocrService: OCRService = OCRService(),
         cardParser: CardTextParser = CardTextParser(),
-        apiClient: PokemonTCGAPIClientProtocol? = nil
+        apiClient: CardSearchService? = nil
     ) {
         self.cameraService = cameraService ?? CameraService()
         self.ocrService = ocrService
         self.cardParser = cardParser
-        self.apiClient = apiClient ?? PokemonTCGAPIClient()
+        self.apiClient = apiClient ?? TCGDexClient()
         
         setupFrameProcessing()
     }
@@ -117,6 +119,7 @@ final class ScannerViewModel: ObservableObject {
         lastScanResult = nil
         detectedMatches = []
         recognizedTextLines = []
+        cameraService.resumeCapture()
         if scannerState != .scanning {
             scannerState = .idle
         }
@@ -126,14 +129,50 @@ final class ScannerViewModel: ObservableObject {
     func searchWithCurrentHint() async {
         guard let hint = lastScanResult?.parsedHint, hint.hasStrongHint else { return }
         
+        isProcessing = true
+        scannerState = .processing
+        cameraService.pauseCapture()
+        
+        defer {
+            isProcessing = false
+            if navigationPath.isEmpty, scannerState == .processing {
+                scannerState = .scanning
+                cameraService.resumeCapture()
+            }
+        }
+        
         do {
-            isProcessing = true
-            let matches = try await apiClient.searchCards(hint: hint)
-            detectedMatches = matches
+            scannerState = .processing
+            cameraService.pauseCapture()
+            let result = try await apiClient.searchCardsWithAttempts(hint: hint)
+            detectedMatches = result.matches
+            handleSearchResult(result.matches, hint: hint, attemptedQueries: result.attemptedQueries, warning: result.warning)
         } catch {
             print("Search error: \(error)")
+            scannerState = .scanning
+            cameraService.resumeCapture()
         }
-        isProcessing = false
+    }
+
+    /// Resume camera capture and reset transient scan state after the user finishes with results
+    func resumeScanningAfterResults() {
+        cameraService.resumeCapture()
+        detectedMatches = []
+        lastScanResult = nil
+        recognizedTextLines = []
+        scannerState = .scanning
+    }
+    
+    func pushResults() {
+        guard navigationPath.isEmpty, !detectedMatches.isEmpty else { return }
+        cameraService.pauseCapture()
+        navigationPath.append(.results(detectedMatches))
+    }
+    
+    func pushDetail(_ match: CardMatch) {
+        guard navigationPath.isEmpty else { return }
+        cameraService.pauseCapture()
+        navigationPath.append(.detail(match))
     }
     
     // MARK: - Private Methods
@@ -151,9 +190,20 @@ final class ScannerViewModel: ObservableObject {
     
     private func processFrame(_ image: UIImage) async {
         guard !isProcessing else { return }
+        guard navigationPath.isEmpty else { return }
+        guard scannerState == .scanning || scannerState == .idle else { return }
         
         isProcessing = true
         scannerState = .processing
+        cameraService.pauseCapture()
+        
+        defer {
+            isProcessing = false
+            if navigationPath.isEmpty, scannerState == .processing {
+                scannerState = .scanning
+                cameraService.resumeCapture()
+            }
+        }
         
         let startTime = Date()
         
@@ -182,35 +232,42 @@ final class ScannerViewModel: ObservableObject {
                 scannerState = .cardDetected(parsedHint)
                 
                 do {
-                    let matches = try await apiClient.searchCards(hint: parsedHint)
+                    let result = try await apiClient.searchCardsWithAttempts(hint: parsedHint)
+                    let matches = result.matches
                     
                     if matches.isEmpty {
                         print("⚠️ No cards found in API for this hint")
-                        // Keep scanning, card might not be recognized yet
-                        scannerState = .scanning
                         detectedMatches = []
+                        handleSearchResult(matches, hint: parsedHint, attemptedQueries: result.attemptedQueries, warning: result.warning)
                     } else {
                         print("✅ Found \(matches.count) matching cards")
                         detectedMatches = matches
                         scannerState = .cardDetected(parsedHint)
+                        handleSearchResult(matches, hint: parsedHint, attemptedQueries: result.attemptedQueries, warning: result.warning)
                     }
                 } catch {
                     print("❌ API search error: \(error)")
-                    // Don't stop scanning on API errors
-                    scannerState = .scanning
+                    // Show NoResults with error to avoid looping
                     detectedMatches = []
+                    handleSearchResult(
+                        [],
+                        hint: parsedHint,
+                        attemptedQueries: [],
+                        warning: "Search failed: \(error.localizedDescription)"
+                    )
                 }
             } else {
                 scannerState = .scanning
                 detectedMatches = []
+                cameraService.resumeCapture()
             }
             
         } catch {
             print("Frame processing error: \(error)")
             scannerState = .scanning
+            cameraService.resumeCapture()
         }
         
-        isProcessing = false
     }
 }
 
@@ -227,5 +284,24 @@ extension ScannerViewModel {
     
     var parsedHintDescription: String {
         lastScanResult?.parsedHint.debugDescription ?? "No data"
+    }
+}
+
+// MARK: - Navigation Helpers
+private extension ScannerViewModel {
+    func handleSearchResult(_ matches: [CardMatch], hint: ParsedCardHint, attemptedQueries: [String], warning: String?) {
+        guard navigationPath.isEmpty else { return }
+        cameraService.pauseCapture()
+        
+        if matches.isEmpty {
+            scannerState = .noResults
+            navigationPath.append(.noResults(hint, attemptedQueries: attemptedQueries, warning: warning))
+        } else if matches.count == 1, autoConfirmSingleMatch {
+            scannerState = .showingResults
+            navigationPath.append(.detail(matches[0]))
+        } else {
+            scannerState = .showingResults
+            navigationPath.append(.results(matches))
+        }
     }
 }
